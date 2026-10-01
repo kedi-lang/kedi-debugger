@@ -214,7 +214,7 @@ class Snapshot:
                     self._hide_text = True
                     break
                 secrets.add(secret)
-        except RuntimeError:
+        except (RuntimeError, UnicodeError):
             self._hide_text = True
         return tuple(sorted(secrets, key=len, reverse=True))
 
