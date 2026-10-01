@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import math
+import threading
+import time
 from typing import Any, BinaryIO
 
 MAX_MESSAGE_BYTES = 4 * 1024 * 1024
@@ -14,6 +16,40 @@ __all__ = ["MAX_MESSAGE_BYTES", "ProtocolError", "read_message", "write_message"
 
 class ProtocolError(ValueError):
     """Malformed, truncated, or oversized protocol input; never includes raw data."""
+
+
+def cancel_windows_read(thread: threading.Thread, timeout: float) -> None:
+    """Release a pipe reader before the Windows CRT closes its descriptor."""
+    import ctypes
+    from ctypes import wintypes
+
+    if thread.native_id is None or not thread.is_alive():
+        return
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenThread.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel.OpenThread.restype = wintypes.HANDLE
+    kernel.CancelSynchronousIo.argtypes = (wintypes.HANDLE,)
+    kernel.CancelSynchronousIo.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel.CloseHandle.restype = wintypes.BOOL
+    handle = kernel.OpenThread(0x0001, False, thread.native_id)  # THREAD_TERMINATE
+    if not handle:
+        if thread.is_alive():
+            raise ctypes.WinError(ctypes.get_last_error())
+        return
+    try:
+        deadline = time.monotonic() + timeout
+        while thread.is_alive():
+            # Retry if shutdown races with the reader entering its next ReadFile.
+            if not kernel.CancelSynchronousIo(handle):
+                error = ctypes.get_last_error()
+                if error != 1168:  # ERROR_NOT_FOUND: no outstanding read yet.
+                    raise ctypes.WinError(error)
+            thread.join(0.01)
+            if thread.is_alive() and time.monotonic() >= deadline:
+                raise TimeoutError("Debugger input reader did not stop")
+    finally:
+        kernel.CloseHandle(handle)
 
 
 def _invalid_constant(value: str) -> None:

@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from .environment import launch_environment
-from .protocol import ProtocolError, read_message, write_message
+from .protocol import ProtocolError, cancel_windows_read, read_message, write_message
 from .redaction import is_token_metric_name
 
 __all__ = ["DebugAdapter", "validate_launch"]
@@ -613,7 +613,7 @@ class DebugAdapter:
     def run(self) -> int:
         """Serve until disconnect, client EOF, or malformed client framing."""
         output_thread = self._thread(self._write_client)
-        self._thread(self._read_messages, self._reader, "client")
+        input_thread = self._thread(self._read_messages, self._reader, "client")
         status = 0
         value: Any
         try:
@@ -663,6 +663,8 @@ class DebugAdapter:
         finally:
             self._stop_worker()
             self._closed.set()
+            if os.name == "nt":
+                cancel_windows_read(input_thread, _STOP_TIMEOUT)
             for thread in self._worker_threads:
                 thread.join(timeout=0.1)
             if self._process is not None:
